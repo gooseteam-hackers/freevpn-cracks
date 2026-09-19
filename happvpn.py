@@ -1,11 +1,12 @@
 import os
 import re
 import json
-import time
+import sys
 import logging
 import platform
 import urllib.parse
 import subprocess
+import base64
 from pathlib import Path
 
 import requests
@@ -15,12 +16,12 @@ from bs4 import BeautifulSoup
 HPWNR_LOCAL_NAME = "hpwnr.exe" if platform.system().lower() == "windows" else "hpwnr"
 
 CHANNEL_URL = "https://t.me/s/happvpn"
-CHECK_INTERVAL_SECONDS = 3600  # 1 час
 
 FILE_AUTO = "subscription_auto.txt"
 FILE_DEFAULT = "subscription_default.txt"
 
-BRANDING_TEXT = "↖️ Telegram канал @goosedev_vpnsubs ↗️\n✨ HAPPiVPN cracked by @GooseDev72 ✨"
+# Требуемое название профиля
+PROFILE_TITLE = "#profile-title: base64:SEFQUGlWUE4gY3JhY2tlZCDinKg="
 BRANDING_URL = "https://t.me/goosedev_vpnsubs"
 
 HEADERS = {
@@ -104,7 +105,6 @@ def ensure_hpwnr():
         return False
 
 def get_latest_crypt5_link():
-    """Парсит веб-версию канала и находит первую ссылку happ://crypt5/ в САМОМ НИЖНЕМ (новом) сообщении."""
     logging.info("Парсинг канала @happvpn...")
     try:
         response = requests.get(CHANNEL_URL, headers=HEADERS, timeout=15)
@@ -120,7 +120,6 @@ def get_latest_crypt5_link():
         logging.warning("Не найдено сообщений на странице.")
         return None
 
-    # Берем САМОЕ НИЖНЕЕ (последнее в DOM, то есть самое новое) сообщение
     latest_text = message_blocks[-1].get_text()
     
     logging.info("="*60)
@@ -128,8 +127,6 @@ def get_latest_crypt5_link():
     logging.info(latest_text)
     logging.info("="*60)
     
-    # 🔥 ИСПРАВЛЕНИЕ: используем [A-Za-z0-9+/=]+, чтобы захватить ТОЛЬКО валидные символы base64.
-    # Это автоматически отсеет прилипшие точки, запятые или скобки в конце предложения!
     match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', latest_text)
     
     if match:
@@ -142,7 +139,6 @@ def get_latest_crypt5_link():
     return None
 
 def decrypt_link(crypt_link):
-    """Дешифрует ссылку с помощью hpwnr."""
     logging.info("Дешифровка ссылки...")
     try:
         cmd = [f"./{HPWNR_LOCAL_NAME}" if platform.system() != "Windows" else HPWNR_LOCAL_NAME, crypt_link]
@@ -160,7 +156,6 @@ def decrypt_link(crypt_link):
         return None
 
 def process_url(decrypted_url):
-    """URL-декодирует ссылку и готовит версии для auto и default."""
     decoded = urllib.parse.unquote(decrypted_url)
     
     if decoded.endswith('/auto'):
@@ -172,8 +167,7 @@ def process_url(decrypted_url):
         
     return url_auto, url_default
 
-def fetch_and_process_subscription(url):
-    """Скачивает подписку и применяет правила замены брендинга."""
+def fetch_and_process_subscription(url, is_default=False):
     logging.info(f"Скачивание подписки: {url[:50]}...")
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -188,7 +182,7 @@ def fetch_and_process_subscription(url):
         try:
             data = json.loads(content)
             if isinstance(data, dict):
-                data['announce'] = BRANDING_TEXT
+                data['announce'] = PROFILE_TITLE
                 data['support_url'] = BRANDING_URL
                 data['web_page_url'] = BRANDING_URL
                 
@@ -199,19 +193,24 @@ def fetch_and_process_subscription(url):
                             new_tag = re.sub(r'\s*[-–—]\s*TG:\s*@HappVPN\s*', ' ● ALL 🟢', old_tag, flags=re.IGNORECASE)
                             ob['tag'] = new_tag
                             
-                return json.dumps(data, indent=2, ensure_ascii=False)
+            final_content = json.dumps(data, indent=2, ensure_ascii=False)
+            if is_default:
+                return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
+            return final_content
         except json.JSONDecodeError:
             pass
 
     # Обработка Plain Text (список ссылок)
     lines = content.split('\n')
-    processed_lines = []
-    processed_lines.append(f"# {BRANDING_TEXT.replace(chr(10), ' | ')}")
+    # Устанавливаем требуемое название первой строкой
+    processed_lines = [PROFILE_TITLE]
     
     for line in lines:
         line = line.strip()
-        if not line or line.startswith('#'):
-            processed_lines.append(line)
+        if not line:
+            continue
+        # Пропускаем старые заголовки, чтобы не дублировать
+        if line.startswith('#') and not line.startswith(PROFILE_TITLE):
             continue
             
         if '://' in line and '#' in line:
@@ -221,10 +220,15 @@ def fetch_and_process_subscription(url):
         else:
             processed_lines.append(line)
             
-    return '\n'.join(processed_lines)
+    final_content = '\n'.join(processed_lines)
+    
+    # Если это default версия, кодируем ВЕСЬ файл в Base64
+    if is_default:
+        return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
+        
+    return final_content
 
 def save_to_file(filepath, content):
-    """Сохраняет контент в файл."""
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -232,45 +236,36 @@ def save_to_file(filepath, content):
     except IOError as e:
         logging.error(f"Ошибка записи в {filepath}: {e}")
 
-def main_loop():
-    logging.info("🚀 Запуск парсера HAPPiVPN (GooseDev72 edition)")
-    logging.info(f"Интервал проверки: {CHECK_INTERVAL_SECONDS} секунд")
+def main():
+    logging.info("🚀 Запуск парсера HAPPiVPN (GooseDev72 edition) - ОДНОКРАТНЫЙ РЕЖИМ")
     
     if not ensure_hpwnr():
         logging.error("Невозможно продолжить без hpwnr. Завершение работы.")
-        return
+        return 1
 
-    while True:
-        try:
-            logging.info("-" * 50)
-            crypt_link = get_latest_crypt5_link()
-            if not crypt_link:
-                logging.info("Новых ссылок не найдено, ждем следующего цикла...")
-                time.sleep(CHECK_INTERVAL_SECONDS)
-                continue
+    crypt_link = get_latest_crypt5_link()
+    if not crypt_link:
+        logging.info("Новых ссылок не найдено. Завершение работы.")
+        return 1
 
-            decrypted = decrypt_link(crypt_link)
-            if not decrypted:
-                logging.info("⏳ Пропуск из-за ошибки дешифровки, ждем следующего цикла...")
-                time.sleep(CHECK_INTERVAL_SECONDS)
-                continue
+    decrypted = decrypt_link(crypt_link)
+    if not decrypted:
+        logging.error("Ошибка дешифровки. Завершение работы.")
+        return 1
 
-            url_auto, url_default = process_url(decrypted)
-            
-            content_auto = fetch_and_process_subscription(url_auto)
-            if content_auto:
-                save_to_file(FILE_AUTO, content_auto)
-                
-            content_default = fetch_and_process_subscription(url_default)
-            if content_default:
-                save_to_file(FILE_DEFAULT, content_default)
+    url_auto, url_default = process_url(decrypted)
+    
+    content_auto = fetch_and_process_subscription(url_auto, is_default=False)
+    if content_auto:
+        save_to_file(FILE_AUTO, content_auto)
+        
+    content_default = fetch_and_process_subscription(url_default, is_default=True)
+    if content_default:
+        save_to_file(FILE_DEFAULT, content_default)
 
-            logging.info("🎉 Цикл успешно завершен!")
-            
-        except Exception as e:
-            logging.error(f"Непредвиденная ошибка в главном цикле: {e}")
-            
-        time.sleep(CHECK_INTERVAL_SECONDS)
+    logging.info("🎉 Парсер успешно завершил работу!")
+    return 0
 
 if __name__ == "__main__":
-    main_loop()
+    exit_code = main()
+    sys.exit(exit_code)
