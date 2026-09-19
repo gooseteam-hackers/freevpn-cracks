@@ -11,6 +11,8 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
+# ================= НАСТРОЙКИ =================
+# Имя файла будет выбрано автоматически в зависимости от ОС
 HPWNR_LOCAL_NAME = "hpwnr.exe" if platform.system().lower() == "windows" else "hpwnr"
 
 CHANNEL_URL = "https://t.me/s/happvpn"
@@ -23,7 +25,7 @@ BRANDING_TEXT = "↖️ Telegram канал @goosedev_vpnsubs ↗️\n✨ HAPPiV
 BRANDING_URL = "https://t.me/goosedev_vpnsubs"
 
 HEADERS = {
-    "User-Agent": "curl/1.0",
+    "User-Agent": "GooseDev72-Parser/1.0",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
 }
 
@@ -33,26 +35,32 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
+# =============================================
+
 def get_hpwnr_asset_name():
+    """Определяет точное имя файла ассета hpwnr из релизов GitHub для текущей ОС."""
     system = platform.system().lower()
     machine = platform.machine().lower()
     
     if system == "windows":
-        return "hpwnr-x86_64-pc-windows-gnu.exe"
+        return "hpwnr-windows-x64.exe" if machine in ("x86_64", "amd64") else "hpwnr-windows-x86.exe"
     elif system == "linux":
         if machine in ("x86_64", "amd64"):
-            return "hpwnr-x86_64-unknown-linux-musl"
+            return "hpwnr-linux-x86_64"
         elif machine in ("aarch64", "arm64"):
-            return "hpwnr-aarch64-unknown-linux-musl"
+            return "hpwnr-linux-arm64"
+        elif machine in ("armv7l", "armv7"):
+            return "hpwnr-linux-armv7"
     elif system == "darwin":  # macOS
         if machine in ("x86_64", "amd64"):
-            return "hpwnr-x86_64-apple-darwin"
+            return "hpwnr-macos-x86_64"
         elif machine in ("aarch64", "arm64"):
-            return "hpwnr-aarch64-apple-darwin"
+            return "hpwnr-macos-arm64"
             
-    raise RuntimeError(f"Неподдерживаемая ОС/архитектура: {system} {machine}")
+    raise RuntimeError(f"Неподдерживаемая ОС/архитектура: {system} {machine}. Скачай hpwnr вручную с https://github.com/Omegaplexx/hpwnr/releases")
 
 def ensure_hpwnr():
+    """Проверяет наличие hpwnr и скачивает его автоматически, если нужно."""
     if os.path.exists(HPWNR_LOCAL_NAME):
         logging.info(f"✅ Файл '{HPWNR_LOCAL_NAME}' уже существует.")
         return True
@@ -76,7 +84,7 @@ def ensure_hpwnr():
                 
         if not download_url:
             logging.error(f"❌ Не удалось найти ассет '{asset_name}' в последнем релизе.")
-            logging.error("💡 Скачай его вручную с https://github.com/Omegaplexx/hpwnr/releases")
+            logging.error("💡 Скачай его вручную с https://github.com/Omegaplexx/hpwnr/releases и положи рядом со скриптом.")
             return False
             
         logging.info(f"🔗 Начинаю загрузку: {download_url}")
@@ -94,13 +102,13 @@ def ensure_hpwnr():
         
     except requests.RequestException as e:
         logging.error(f"❌ Ошибка сети при скачивании hpwnr: {e}")
-        logging.error("💡 Совет: Скачай файл вручную и положи его в папку со скриптом.")
         return False
     except Exception as e:
         logging.error(f"❌ Неожиданная ошибка: {e}")
         return False
 
 def get_latest_crypt5_link():
+    """Парсит веб-версию канала и находит первую ссылку happ://crypt5/ в последнем сообщении."""
     logging.info("Парсинг канала @happvpn...")
     try:
         response = requests.get(CHANNEL_URL, headers=HEADERS, timeout=15)
@@ -128,15 +136,11 @@ def get_latest_crypt5_link():
     return None
 
 def decrypt_link(crypt_link):
+    """Дешифрует ссылку с помощью hpwnr."""
     logging.info("Дешифровка ссылки...")
     try:
-        result = subprocess.run(
-            [f"./{HPWNR_LOCAL_NAME}" if platform.system() != "Windows" else HPWNR_LOCAL_NAME, crypt_link],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10
-        )
+        cmd = [f"./{HPWNR_LOCAL_NAME}" if platform.system() != "Windows" else HPWNR_LOCAL_NAME, crypt_link]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
         decrypted = result.stdout.strip()
         if not decrypted:
             raise ValueError("Пустой вывод от hpwnr")
@@ -150,6 +154,7 @@ def decrypt_link(crypt_link):
         return None
 
 def process_url(decrypted_url):
+    """URL-декодирует ссылку и готовит версии для auto и default."""
     decoded = urllib.parse.unquote(decrypted_url)
     
     if decoded.endswith('/auto'):
@@ -162,6 +167,7 @@ def process_url(decrypted_url):
     return url_auto, url_default
 
 def fetch_and_process_subscription(url):
+    """Скачивает подписку и применяет правила замены брендинга."""
     logging.info(f"Скачивание подписки: {url[:50]}...")
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -171,6 +177,7 @@ def fetch_and_process_subscription(url):
         logging.error(f"Не удалось скачать подписку: {e}")
         return None
 
+    # Обработка JSON (Sing-Box)
     if content.startswith('{'):
         try:
             data = json.loads(content)
@@ -190,6 +197,7 @@ def fetch_and_process_subscription(url):
         except json.JSONDecodeError:
             pass
 
+    # Обработка Plain Text (список ссылок)
     lines = content.split('\n')
     processed_lines = []
     processed_lines.append(f"# {BRANDING_TEXT.replace(chr(10), ' | ')}")
@@ -210,6 +218,7 @@ def fetch_and_process_subscription(url):
     return '\n'.join(processed_lines)
 
 def save_to_file(filepath, content):
+    """Сохраняет контент в файл."""
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
