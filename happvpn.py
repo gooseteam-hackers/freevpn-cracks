@@ -128,9 +128,9 @@ def get_latest_crypt5_link():
     logging.info(latest_text)
     logging.info("="*60)
     
-    # Ищем первую попавшуюся ссылку happ://crypt5/
-    # Используем [^\s<>"]+ чтобы не захватить прилипшие кавычки или теги, если они есть
-    match = re.search(r'(happ://crypt5/[^\s<>"]+)', latest_text)
+    # 🔥 ИСПРАВЛЕНИЕ: используем [A-Za-z0-9+/=]+, чтобы захватить ТОЛЬКО валидные символы base64.
+    # Это автоматически отсеет прилипшие точки, запятые или скобки в конце предложения!
+    match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', latest_text)
     
     if match:
         link = match.group(1).strip()
