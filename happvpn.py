@@ -121,12 +121,6 @@ def get_latest_crypt5_link():
         return None
 
     latest_text = message_blocks[-1].get_text()
-    
-    logging.info("="*60)
-    logging.info("📝 ТЕКСТ ПОСЛЕДНЕГО СООБЩЕНИЯ:")
-    logging.info(latest_text)
-    logging.info("="*60)
-    
     match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', latest_text)
     
     if match:
@@ -167,6 +161,10 @@ def process_url(decrypted_url):
         
     return url_auto, url_default
 
+def rename_config_tags(name_str):
+    """Применяет регулярку для замены брендинга в именах."""
+    return re.sub(r'\s*[-–—]\s*TG:\s*@HappVPN\s*', ' ● ALL 🟢', name_str, flags=re.IGNORECASE)
+
 def fetch_and_process_subscription(url, is_default=False):
     logging.info(f"Скачивание подписки: {url[:50]}...")
     try:
@@ -177,53 +175,74 @@ def fetch_and_process_subscription(url, is_default=False):
         logging.error(f"Не удалось скачать подписку: {e}")
         return None
 
-    # Обработка JSON (Sing-Box)
-    if content.startswith('{'):
+    # ================= ОБРАБОТКА JSON =================
+    if content.startswith('[') or content.startswith('{'):
         try:
             data = json.loads(content)
-            if isinstance(data, dict):
-                data['announce'] = PROFILE_TITLE
-                data['support_url'] = BRANDING_URL
-                data['web_page_url'] = BRANDING_URL
+            
+            # 1. Если это МАССИВ конфигов (Xray/V2Ray список)
+            if isinstance(data, list):
+                logging.info("Обнаружен массив конфигов (JSON list).")
+                for item in data:
+                    if isinstance(item, dict):
+                        if 'remarks' in item and isinstance(item['remarks'], str):
+                            item['remarks'] = rename_config_tags(item['remarks'])
+                        if 'tag' in item and isinstance(item['tag'], str):
+                            item['tag'] = rename_config_tags(item['tag'])
+                            
+                final_json_str = json.dumps(data, indent=2, ensure_ascii=False)
                 
+            # 2. Если это ОБЪЕКТ (Sing-Box config)
+            elif isinstance(data, dict):
+                logging.info("Обнаружен объект Sing-Box (JSON dict).")
                 if 'outbounds' in data and isinstance(data['outbounds'], list):
                     for ob in data['outbounds']:
                         if isinstance(ob, dict) and 'tag' in ob:
-                            old_tag = str(ob['tag'])
-                            new_tag = re.sub(r'\s*[-–—]\s*TG:\s*@HappVPN\s*', ' ● ALL 🟢', old_tag, flags=re.IGNORECASE)
-                            ob['tag'] = new_tag
-                            
-            final_content = json.dumps(data, indent=2, ensure_ascii=False)
+                            ob['tag'] = rename_config_tags(str(ob['tag']))
+                
+                # Для Sing-Box объекта в default можно продублировать заголовки внутрь JSON
+                if is_default:
+                    data['announce'] = PROFILE_TITLE
+                    data['support_url'] = BRANDING_URL
+                    data['web_page_url'] = BRANDING_URL
+                    
+                final_json_str = json.dumps(data, indent=2, ensure_ascii=False)
+            else:
+                final_json_str = content
+                
+            # Финализация: для default добавляем текстовый заголовок первой строкой и пакуем в Base64
             if is_default:
+                final_content = f"{PROFILE_TITLE}\n{final_json_str}"
                 return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
-            return final_content
+            else:
+                return final_json_str
+                
         except json.JSONDecodeError:
-            pass
+            logging.warning("Похоже на JSON, но не парсится. Обрабатываем как Plain Text.")
 
-    # Обработка Plain Text (список ссылок)
+    # ================= ОБРАБОТКА PLAIN TEXT =================
     lines = content.split('\n')
-    # Устанавливаем требуемое название первой строкой
-    processed_lines = [PROFILE_TITLE]
+    processed_lines = []
     
     for line in lines:
         line = line.strip()
         if not line:
             continue
-        # Пропускаем старые заголовки, чтобы не дублировать
-        if line.startswith('#') and not line.startswith(PROFILE_TITLE):
+        # Игнорируем старые заголовки, чтобы не было дублей
+        if line.startswith('#'):
             continue
             
         if '://' in line and '#' in line:
             base, fragment = line.rsplit('#', 1)
-            new_fragment = re.sub(r'\s*[-–—]\s*TG:\s*@HappVPN\s*', ' ● ALL 🟢', fragment, flags=re.IGNORECASE)
+            new_fragment = rename_config_tags(fragment)
             processed_lines.append(f"{base}#{new_fragment}")
         else:
             processed_lines.append(line)
             
     final_content = '\n'.join(processed_lines)
     
-    # Если это default версия, кодируем ВЕСЬ файл в Base64
     if is_default:
+        final_content = f"{PROFILE_TITLE}\n{final_content}"
         return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
         
     return final_content
@@ -255,10 +274,12 @@ def main():
 
     url_auto, url_default = process_url(decrypted)
     
+    # AUTO: Чистый JSON/текст, только измененные имена
     content_auto = fetch_and_process_subscription(url_auto, is_default=False)
     if content_auto:
         save_to_file(FILE_AUTO, content_auto)
         
+    # DEFAULT: С заголовками внутри Base64
     content_default = fetch_and_process_subscription(url_default, is_default=True)
     if content_default:
         save_to_file(FILE_DEFAULT, content_default)
