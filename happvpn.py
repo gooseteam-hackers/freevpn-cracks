@@ -1,28 +1,24 @@
 import os
 import re
-import json
 import sys
+import time
 import logging
 import platform
-import urllib.parse
 import subprocess
 import base64
 from pathlib import Path
-
-import requests
-from bs4 import BeautifulSoup
 
 # ================= НАСТРОЙКИ =================
 HPWNR_LOCAL_NAME = "hpwnr.exe" if platform.system().lower() == "windows" else "hpwnr"
 
 CHANNEL_URL = "https://t.me/s/happvpn"
+CHECK_INTERVAL_SECONDS = 3600  # 1 час
 
 FILE_AUTO = "subscription_auto.txt"
 FILE_DEFAULT = "subscription_default.txt"
 
 # Требуемое название профиля
 PROFILE_TITLE = "#profile-title: base64:SEFQUGlWUE4gY3JhY2tlZCDinKg="
-BRANDING_URL = "https://t.me/goosedev_vpnsubs"
 
 HEADERS = {
     "User-Agent": "GooseDev72-Parser/1.0",
@@ -67,6 +63,7 @@ def ensure_hpwnr():
         asset_name = get_hpwnr_asset_name()
         logging.info(f"⬇️ Файл '{HPWNR_LOCAL_NAME}' не найден. Ищу '{asset_name}' на GitHub...")
         
+        import requests
         api_url = "https://api.github.com/repos/Omegaplexx/hpwnr/releases/latest"
         api_headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "GooseDev72-Parser"}
         response = requests.get(api_url, headers=api_headers, timeout=10)
@@ -97,19 +94,18 @@ def ensure_hpwnr():
         logging.info(f"✅ Успешно скачано и сохранено как '{HPWNR_LOCAL_NAME}'!")
         return True
         
-    except requests.RequestException as e:
-        logging.error(f"❌ Ошибка сети при скачивании hpwnr: {e}")
-        return False
     except Exception as e:
-        logging.error(f"❌ Неожиданная ошибка: {e}")
+        logging.error(f"❌ Ошибка при скачивании hpwnr: {e}")
         return False
 
 def get_latest_crypt5_link():
     logging.info("Парсинг канала @happvpn...")
     try:
+        import requests
+        from bs4 import BeautifulSoup
         response = requests.get(CHANNEL_URL, headers=HEADERS, timeout=15)
         response.raise_for_status()
-    except requests.RequestException as e:
+    except Exception as e:
         logging.error(f"Ошибка при запросе к Telegram: {e}")
         return None
 
@@ -126,7 +122,6 @@ def get_latest_crypt5_link():
     if match:
         link = match.group(1).strip()
         logging.info(f"🔗 ИЗВЛЕЧЕННАЯ ССЫЛКА ЦЕЛИКОМ: {link}")
-        logging.info(f"📏 Длина ссылки: {len(link)} символов")
         return link
     
     logging.warning("Ссылка happ://crypt5/ в последнем сообщении не найдена.")
@@ -136,7 +131,14 @@ def decrypt_link(crypt_link):
     logging.info("Дешифровка ссылки...")
     try:
         cmd = [f"./{HPWNR_LOCAL_NAME}" if platform.system() != "Windows" else HPWNR_LOCAL_NAME, crypt_link]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            check=True, 
+            timeout=10,
+            encoding='utf-8' # Явное указание UTF-8 предотвращает Mojibake
+        )
         decrypted = result.stdout.strip()
         if not decrypted:
             raise ValueError("Пустой вывод от hpwnr")
@@ -150,6 +152,10 @@ def decrypt_link(crypt_link):
         return None
 
 def process_url(decrypted_url):
+    """Разделяет ссылку на auto и default версии."""
+    # URL-decode не обязателен здесь, так как hpwnr и так выдаст чистый URL, 
+    # но на всякий случай оставим для корректной обработки
+    import urllib.parse
     decoded = urllib.parse.unquote(decrypted_url)
     
     if decoded.endswith('/auto'):
@@ -161,95 +167,76 @@ def process_url(decrypted_url):
         
     return url_auto, url_default
 
-def rename_config_tags(name_str):
-    """Применяет регулярку для замены брендинга в именах."""
-    return re.sub(r'\s*[-–—]\s*TG:\s*@HappVPN\s*', ' ● ALL 🟢', name_str, flags=re.IGNORECASE)
-
-def fetch_and_process_subscription(url, is_default=False):
-    logging.info(f"Скачивание подписки: {url[:50]}...")
+def fetch_and_convert_to_uri(url):
+    """Скачивает подписку по URL и конвертирует её в чистые vless:// ссылки через hpwnr."""
+    logging.info(f"Скачивание и конвертация в URI: {url[:50]}...")
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        content = resp.text.strip()
-    except requests.RequestException as e:
-        logging.error(f"Не удалось скачать подписку: {e}")
+        cmd = [
+            f"./{HPWNR_LOCAL_NAME}" if platform.system() != "Windows" else HPWNR_LOCAL_NAME, 
+            url, 
+            "uri"  # Ключевая команда: конвертирует JSON Xray в список vless:// ссылок
+        ]
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            check=True, 
+            timeout=30,
+            encoding='utf-8' # ГАРАНТИЯ корректной обработки эмодзи и кириллицы (🇪🇺 Автовыбор)
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        logging.error(f"❌ Ошибка hpwnr при конвертации: {e.stderr.strip()}")
+        return None
+    except Exception as e:
+        logging.error(f"❌ Исключение при конвертации: {e}")
         return None
 
-    # ================= ОБРАБОТКА JSON =================
-    if content.startswith('[') or content.startswith('{'):
-        try:
-            data = json.loads(content)
-            
-            # 1. Если это МАССИВ конфигов (Xray/V2Ray список)
-            if isinstance(data, list):
-                logging.info("Обнаружен массив конфигов (JSON list).")
-                for item in data:
-                    if isinstance(item, dict):
-                        if 'remarks' in item and isinstance(item['remarks'], str):
-                            item['remarks'] = rename_config_tags(item['remarks'])
-                        if 'tag' in item and isinstance(item['tag'], str):
-                            item['tag'] = rename_config_tags(item['tag'])
-                            
-                final_json_str = json.dumps(data, indent=2, ensure_ascii=False)
-                
-            # 2. Если это ОБЪЕКТ (Sing-Box config)
-            elif isinstance(data, dict):
-                logging.info("Обнаружен объект Sing-Box (JSON dict).")
-                if 'outbounds' in data and isinstance(data['outbounds'], list):
-                    for ob in data['outbounds']:
-                        if isinstance(ob, dict) and 'tag' in ob:
-                            ob['tag'] = rename_config_tags(str(ob['tag']))
-                
-                # Для Sing-Box объекта в default можно продублировать заголовки внутрь JSON
-                if is_default:
-                    data['announce'] = PROFILE_TITLE
-                    data['support_url'] = BRANDING_URL
-                    data['web_page_url'] = BRANDING_URL
-                    
-                final_json_str = json.dumps(data, indent=2, ensure_ascii=False)
-            else:
-                final_json_str = content
-                
-            # Финализация: для default добавляем текстовый заголовок первой строкой и пакуем в Base64
-            if is_default:
-                final_content = f"{PROFILE_TITLE}\n{final_json_str}"
-                return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
-            else:
-                return final_json_str
-                
-        except json.JSONDecodeError:
-            logging.warning("Похоже на JSON, но не парсится. Обрабатываем как Plain Text.")
-
-    # ================= ОБРАБОТКА PLAIN TEXT =================
-    lines = content.split('\n')
+def process_uri_output(uri_text, is_default=False):
+    """Очищает имена конфигов и применяет брендинг."""
+    if not uri_text:
+        return None
+    
+    lines = uri_text.split('\n')
     processed_lines = []
     
     for line in lines:
         line = line.strip()
-        if not line:
+        if not line or line.startswith('#'):
             continue
-        # Игнорируем старые заголовки, чтобы не было дублей
-        if line.startswith('#'):
-            continue
-            
+        
         if '://' in line and '#' in line:
             base, fragment = line.rsplit('#', 1)
-            new_fragment = rename_config_tags(fragment)
-            processed_lines.append(f"{base}#{new_fragment}")
+            
+            # 1. Агрессивно удаляем "TG: @HappVPN", "@HappVPN", "imo" и подобные хвосты
+            clean_fragment = re.sub(r'\s*[-–—|]?\s*(?:TG:\s*)?@HappVPN\s*', '', fragment, flags=re.IGNORECASE)
+            clean_fragment = re.sub(r'\s*imo\s*', '', clean_fragment, flags=re.IGNORECASE) # Страховка от артефактов "imo"
+            clean_fragment = clean_fragment.strip()
+            
+            # 2. Добавляем наш брендинг, если его еще нет
+            if not clean_fragment.endswith('● ALL 🟢'):
+                clean_fragment = f"{clean_fragment} ● ALL 🟢"
+            
+            # Убираем возможные двойные пробелы перед ●
+            clean_fragment = re.sub(r'\s+● ALL 🟢', ' ● ALL 🟢', clean_fragment)
+            
+            processed_lines.append(f"{base}#{clean_fragment}")
         else:
             processed_lines.append(line)
-            
-    final_content = '\n'.join(processed_lines)
+    
+    final_text = '\n'.join(processed_lines)
     
     if is_default:
-        final_content = f"{PROFILE_TITLE}\n{final_content}"
-        return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
-        
-    return final_content
+        # Для default: добавляем заголовок ПЕРВОЙ строкой и кодируем ВЕСЬ результат в Base64
+        final_text = f"{PROFILE_TITLE}\n{final_text}"
+        return base64.b64encode(final_text.encode('utf-8')).decode('utf-8')
+    
+    # Для auto: возвращаем чистый текст ссылок без Base64 и без заголовка
+    return final_text
 
 def save_to_file(filepath, content):
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, 'w', encoding='utf-8') as f: # Явное указание UTF-8 при записи
             f.write(content)
         logging.info(f"✅ Успешно сохранено в: {filepath}")
     except IOError as e:
@@ -274,13 +261,15 @@ def main():
 
     url_auto, url_default = process_url(decrypted)
     
-    # AUTO: Чистый JSON/текст, только измененные имена
-    content_auto = fetch_and_process_subscription(url_auto, is_default=False)
+    # 1. Обрабатываем AUTO версию (чистые ссылки)
+    uri_auto = fetch_and_convert_to_uri(url_auto)
+    content_auto = process_uri_output(uri_auto, is_default=False)
     if content_auto:
         save_to_file(FILE_AUTO, content_auto)
         
-    # DEFAULT: С заголовками внутри Base64
-    content_default = fetch_and_process_subscription(url_default, is_default=True)
+    # 2. Обрабатываем DEFAULT версию (с заголовком и Base64)
+    uri_default = fetch_and_convert_to_uri(url_default)
+    content_default = process_uri_output(uri_default, is_default=True)
     if content_default:
         save_to_file(FILE_DEFAULT, content_default)
 
