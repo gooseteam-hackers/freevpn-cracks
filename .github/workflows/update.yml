@@ -1,0 +1,55 @@
+# .github/workflows/build.yml
+name: Update Sub
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: write  # Для коммитов
+  actions: read    # Для логов
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'  # ✅ 3.14 не существует, используем стабильную 3.11
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests beautifulsoup4 
+
+      - name: 🚀 Run TetoVPN parser
+        run: |
+          python happvpn.py
+        env:
+          PYTHONUNBUFFERED: '1'
+
+      - name: 💾 Commit & Push updates
+        if: steps.git_status.outputs.changed == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: |
+            💥 Update happvpn subs
+            
+            🕐 Время: ${{ github.event.head_commit.timestamp || github.run_started_at }}
+          file_pattern: "subscription*"
+          commit_user_name: "GitHub Actions"
+          commit_user_email: "actions@github.com"
+          skip_fetch: true
+          skip_checkout: true
+          create_branch: false
