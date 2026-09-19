@@ -12,7 +12,6 @@ import requests
 from bs4 import BeautifulSoup
 
 # ================= НАСТРОЙКИ =================
-# Имя файла будет выбрано автоматически в зависимости от ОС
 HPWNR_LOCAL_NAME = "hpwnr.exe" if platform.system().lower() == "windows" else "hpwnr"
 
 CHANNEL_URL = "https://t.me/s/happvpn"
@@ -38,7 +37,6 @@ logging.basicConfig(
 # =============================================
 
 def get_hpwnr_asset_name():
-    """Определяет точное имя файла ассета hpwnr из релизов GitHub для текущей ОС."""
     system = platform.system().lower()
     machine = platform.machine().lower()
     
@@ -51,16 +49,15 @@ def get_hpwnr_asset_name():
             return "hpwnr-linux-arm64"
         elif machine in ("armv7l", "armv7"):
             return "hpwnr-linux-armv7"
-    elif system == "darwin":  # macOS
+    elif system == "darwin":
         if machine in ("x86_64", "amd64"):
             return "hpwnr-macos-x86_64"
         elif machine in ("aarch64", "arm64"):
             return "hpwnr-macos-arm64"
             
-    raise RuntimeError(f"Неподдерживаемая ОС/архитектура: {system} {machine}. Скачай hpwnr вручную с https://github.com/Omegaplexx/hpwnr/releases")
+    raise RuntimeError(f"Неподдерживаемая ОС/архитектура: {system} {machine}.")
 
 def ensure_hpwnr():
-    """Проверяет наличие hpwnr и скачивает его автоматически, если нужно."""
     if os.path.exists(HPWNR_LOCAL_NAME):
         logging.info(f"✅ Файл '{HPWNR_LOCAL_NAME}' уже существует.")
         return True
@@ -84,7 +81,6 @@ def ensure_hpwnr():
                 
         if not download_url:
             logging.error(f"❌ Не удалось найти ассет '{asset_name}' в последнем релизе.")
-            logging.error("💡 Скачай его вручную с https://github.com/Omegaplexx/hpwnr/releases и положи рядом со скриптом.")
             return False
             
         logging.info(f"🔗 Начинаю загрузку: {download_url}")
@@ -108,7 +104,7 @@ def ensure_hpwnr():
         return False
 
 def get_latest_crypt5_link():
-    """Парсит веб-версию канала и находит первую ссылку happ://crypt5/ в последнем сообщении."""
+    """Парсит веб-версию канала и находит первую ссылку happ://crypt5/ в САМОМ НИЖНЕМ (новом) сообщении."""
     logging.info("Парсинг канала @happvpn...")
     try:
         response = requests.get(CHANNEL_URL, headers=HEADERS, timeout=15)
@@ -124,12 +120,22 @@ def get_latest_crypt5_link():
         logging.warning("Не найдено сообщений на странице.")
         return None
 
-    latest_text = message_blocks[0].get_text()
-    match = re.search(r'(happ://crypt5/[^\s]+)', latest_text)
+    # Берем САМОЕ НИЖНЕЕ (последнее в DOM, то есть самое новое) сообщение
+    latest_text = message_blocks[-1].get_text()
+    
+    logging.info("="*60)
+    logging.info("📝 ТЕКСТ ПОСЛЕДНЕГО СООБЩЕНИЯ:")
+    logging.info(latest_text)
+    logging.info("="*60)
+    
+    # Ищем первую попавшуюся ссылку happ://crypt5/
+    # Используем [^\s<>"]+ чтобы не захватить прилипшие кавычки или теги, если они есть
+    match = re.search(r'(happ://crypt5/[^\s<>"]+)', latest_text)
     
     if match:
         link = match.group(1).strip()
-        logging.info(f"Найдена ссылка: {link[:40]}...")
+        logging.info(f"🔗 ИЗВЛЕЧЕННАЯ ССЫЛКА ЦЕЛИКОМ: {link}")
+        logging.info(f"📏 Длина ссылки: {len(link)} символов")
         return link
     
     logging.warning("Ссылка happ://crypt5/ в последнем сообщении не найдена.")
@@ -144,13 +150,13 @@ def decrypt_link(crypt_link):
         decrypted = result.stdout.strip()
         if not decrypted:
             raise ValueError("Пустой вывод от hpwnr")
-        logging.info("Дешифровка успешна!")
+        logging.info("✅ Дешифровка успешна!")
         return decrypted
     except subprocess.CalledProcessError as e:
-        logging.error(f"Ошибка hpwnr: {e.stderr.strip()}")
+        logging.error(f"❌ Ошибка hpwnr: {e.stderr.strip()}")
         return None
     except Exception as e:
-        logging.error(f"Исключение при дешифровке: {e}")
+        logging.error(f"❌ Исключение при дешифровке: {e}")
         return None
 
 def process_url(decrypted_url):
@@ -245,6 +251,7 @@ def main_loop():
 
             decrypted = decrypt_link(crypt_link)
             if not decrypted:
+                logging.info("⏳ Пропуск из-за ошибки дешифровки, ждем следующего цикла...")
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
