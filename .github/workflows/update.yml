@@ -40,7 +40,6 @@ jobs:
           PYTHONUNBUFFERED: '1'
 
       - name: 💾 Commit & Push updates
-        if: steps.git_status.outputs.changed == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: |
