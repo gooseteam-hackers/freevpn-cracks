@@ -22,6 +22,8 @@ FILE_DEFAULT = "subscription_default.txt"
 
 # Требуемое название профиля
 PROFILE_TITLE = "#profile-title: base64:SEFQUGlWUE4gY3JhY2tlZCDinKg="
+# Добавили объявление для default-подписки (можешь текст поменять на свой)
+ANNOUNCE_TEXT = "#announce: HAPPiVPN cracked by GooseDev72"
 
 HEADERS = {
     "User-Agent": "GooseDev72-Parser/1.0",
@@ -113,6 +115,12 @@ def fetch_subscription(url):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
+        
+        # ⚠️ ИСПРАВЛЕНИЕ КОДИРОВКИ:
+        # Принудительно задаем UTF-8, иначе requests может декодировать как Latin-1, 
+        # что ломает кириллицу и эмодзи (Mojibake).
+        resp.encoding = 'utf-8'
+        
         return resp.text.strip()
     except requests.RequestException as e:
         logging.error(f"Не удалось скачать подписку: {e}")
@@ -161,7 +169,7 @@ def process_default(content):
     """
     DEFAULT версия:
     1. Если это JSON - конвертируем в vless:// URI
-    2. Добавляем заголовок первой строкой
+    2. Добавляем заголовки (#profile-title и #announce)
     3. Кодируем всё в Base64
     """
     content = content.strip()
@@ -175,8 +183,9 @@ def process_default(content):
             return None
         content = uri_content
     
-    # Добавляем заголовок первой строкой
-    final_content = f"{PROFILE_TITLE}\n{content}"
+    # ⚠️ ИСПРАВЛЕНИЕ ФОРМАТА:
+    # Собираем правильный формат с заголовками перед кодированием
+    final_content = f"{PROFILE_TITLE}\n{ANNOUNCE_TEXT}\n{content}"
     
     # Кодируем всё в Base64
     logging.info("DEFAULT: кодируем в Base64")
