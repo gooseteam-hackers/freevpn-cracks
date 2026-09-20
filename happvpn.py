@@ -18,7 +18,7 @@ CHANNEL_URL = "https://t.me/s/happvpn"
 FILE_AUTO = "subscription_auto.txt"
 FILE_DEFAULT = "subscription_default.txt"
 PROFILE_TITLE = "#profile-title: base64:8J+UpSBIQVBQaVZQTiBDUkFDS0VEIPCflKU="
-ANNOUNCE_LINE = "#announce: Cracked by GooseDev72/gooseteam | Обновлено" + datetime.now(timezone.utc).strftime("%Y-%m-%d")
+ANNOUNCE_LINE = "#announce: Cracked by GooseDev72/gooseteam | Обновлено " + datetime.now(timezone.utc).strftime("%Y-%m-%d")
 REPLACEMENT = "ALL 🟢"
 
 NAME_PATTERNS = [
@@ -72,15 +72,19 @@ def get_latest_crypt5_link():
         logging.warning("Не найдено сообщений на странице.")
         return None
 
-    latest_text = message_blocks[-1].get_text()
-    match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', latest_text)
+    messages_to_check = message_blocks[-4:]
+    
+    for i, block in enumerate(reversed(messages_to_check)):
+        text = block.get_text()
+        match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', text)
+        
+        if match:
+            link = match.group(1).strip()
+            msg_position = "самом последнем" if i == 0 else f"{i+1}-м с конца"
+            logging.info(f"🔗 ИЗВЛЕЧЕННАЯ ССЫЛКА (в {msg_position} сообщении): {link[:50]}...")
+            return link
 
-    if match:
-        link = match.group(1).strip()
-        logging.info(f"🔗 ИЗВЛЕЧЕННАЯ ССЫЛКА: {link[:50]}...")
-        return link
-
-    logging.warning("Ссылка happ://crypt5/ в последнем сообщении не найдена.")
+    logging.warning("Ссылка happ://crypt5/ в последних 4 сообщениях не найдена.")
     return None
 
 def decrypt_link(crypt_link):
