@@ -4,7 +4,7 @@ name: Update Sub
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */1 * * *'
 
 permissions:
   contents: write  # Для коммитов
