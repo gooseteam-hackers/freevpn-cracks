@@ -20,6 +20,7 @@ CHANNEL_URL = "https://t.me/s/happvpn"
 FILE_AUTO = "subscription_auto.txt"
 FILE_DEFAULT = "subscription_default.txt"
 
+# Требуемое название профиля
 PROFILE_TITLE = "#profile-title: base64:SEFQUGlWUE4gY3JhY2tlZCDinKg="
 
 HEADERS = {
@@ -36,6 +37,7 @@ logging.basicConfig(
 # =============================================
 
 def ensure_hpwnr():
+    """Проверяет наличие hpwnr в папке core/ и делает его исполняемым."""
     if os.path.exists(HPWNR_LOCAL_PATH):
         logging.info(f"✅ Файл '{HPWNR_LOCAL_PATH}' найден.")
         if platform.system() != "Windows":
@@ -83,7 +85,7 @@ def decrypt_link(crypt_link):
             text=True, 
             check=True, 
             timeout=10,
-            encoding='utf-8' # Гарантия от Mojibake
+            encoding='utf-8'
         )
         decrypted = result.stdout.strip()
         if not decrypted:
@@ -98,18 +100,32 @@ def decrypt_link(crypt_link):
         return None
 
 def process_url(decrypted_url):
+    """Разделяет ссылку на auto и default версии."""
     decoded = urllib.parse.unquote(decrypted_url)
     if decoded.endswith('/auto'):
         return decoded, decoded[:-5]
     else:
         return decoded.rstrip('/') + '/auto', decoded.rstrip('/')
 
-def fetch_and_convert_to_uri(url):
-    logging.info(f"Скачивание и конвертация в URI: {url[:50]}...")
+def fetch_subscription(url):
+    """Скачивает подписку по URL."""
+    logging.info(f"Скачивание подписки: {url[:50]}...")
     try:
-        cmd = [HPWNR_LOCAL_PATH, url, "uri"]
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        return resp.text.strip()
+    except requests.RequestException as e:
+        logging.error(f"Не удалось скачать подписку: {e}")
+        return None
+
+def convert_to_uri(content):
+    """Конвертирует JSON конфиги в vless:// ссылки через hpwnr."""
+    logging.info("Конвертация в URI...")
+    try:
+        cmd = [HPWNR_LOCAL_PATH, "uri"]
         result = subprocess.run(
             cmd, 
+            input=content,
             capture_output=True, 
             text=True, 
             check=True, 
@@ -124,63 +140,47 @@ def fetch_and_convert_to_uri(url):
         logging.error(f"❌ Исключение при конвертации: {e}")
         return None
 
-def clean_fragment(fragment):
-    """Декодирует, чистит от мусора и кодирует обратно название конфига."""
-    # 1. Декодируем URL, чтобы работать с обычным текстом (🇩🇪 [DE] - TG: @HappVPN IMO: 12345)
-    decoded = urllib.parse.unquote(fragment)
+def process_auto(content):
+    """
+    AUTO версия: максимально passthrough.
+    Если это JSON - возвращаем как есть.
+    Если это уже URI - возвращаем как есть.
+    """
+    content = content.strip()
     
-    # 2. Удаляем нежелательные паттерны
-    clean = re.sub(r'\s*[-–—|]?\s*(?:TG:\s*)?@HappVPN\s*', '', decoded, flags=re.IGNORECASE)
-    clean = re.sub(r'\s*IMO:\s*\d+\s*', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'\s*\d{8,}\s*$', '', clean) # Убираем длинные числа в конце (номера), если остались
+    # Проверяем, начинается ли с { или [ (JSON)
+    if content.startswith('{') or content.startswith('['):
+        logging.info("AUTO: JSON конфиг, возвращаем как есть (passthrough)")
+        return content
     
-    # 3. Нормализуем пробелы
-    clean = re.sub(r'\s+', ' ', clean).strip()
-    
-    # 4. Добавляем наш брендинг
-    if not clean.endswith('● ALL 🟢'):
-        clean = f"{clean} ● ALL 🟢"
-    
-    # 5. Кодируем обратно в URL-формат (пробелы станут %20, что корректно для URI)
-    return urllib.parse.quote(clean, safe='')
+    # Иначе возвращаем как есть (уже URI или другой формат)
+    logging.info("AUTO: возвращаем как есть")
+    return content
 
-def process_uri_output(uri_text, is_default=False):
-    if not uri_text:
-        return None
+def process_default(content):
+    """
+    DEFAULT версия:
+    1. Если это JSON - конвертируем в vless:// URI
+    2. Добавляем заголовок первой строкой
+    3. Кодируем всё в Base64
+    """
+    content = content.strip()
     
-    lines = uri_text.split('\n')
-    processed_lines = []
+    # Если это JSON, конвертируем в URI
+    if content.startswith('{') or content.startswith('['):
+        logging.info("DEFAULT: JSON конфиг, конвертируем в URI")
+        uri_content = convert_to_uri(content)
+        if not uri_content:
+            logging.error("Не удалось конвертировать JSON в URI")
+            return None
+        content = uri_content
     
-    # Фильтр: берем только валидные прокси-ссылки, игнорируя любой JSON-мусор
-    valid_protocols = ('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://', 'tuic://', 'socks://', 'http://')
+    # Добавляем заголовок первой строкой
+    final_content = f"{PROFILE_TITLE}\n{content}"
     
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        
-        if not any(line.lower().startswith(proto) for proto in valid_protocols):
-            continue # Пропускаем JSON или некорректные строки
-            
-        if '://' in line and '#' in line:
-            base, fragment = line.rsplit('#', 1)
-            encoded_fragment = clean_fragment(fragment)
-            processed_lines.append(f"{base}#{encoded_fragment}")
-        else:
-            # Если у ссылки вдруг нет фрагмента
-            if not line.endswith('● ALL 🟢'):
-                line = f"{line}#● ALL 🟢"
-            processed_lines.append(line)
-    
-    final_text = '\n'.join(processed_lines)
-    
-    if is_default:
-        # Для default: заголовок + ВСЕ ссылки, и только потом ОДНО общее Base64 кодирование
-        final_text = f"{PROFILE_TITLE}\n{final_text}"
-        return base64.b64encode(final_text.encode('utf-8')).decode('utf-8')
-    
-    # Для auto: возвращаем чистый текст ссылок без Base64 и без заголовка
-    return final_text
+    # Кодируем всё в Base64
+    logging.info("DEFAULT: кодируем в Base64")
+    return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
 
 def save_to_file(filepath, content):
     try:
@@ -191,7 +191,7 @@ def save_to_file(filepath, content):
         logging.error(f"Ошибка записи в {filepath}: {e}")
 
 def main():
-    logging.info("🚀 Запуск парсера HAPPiVPN (GooseDev72 edition) - ОДНОКРАТНЫЙ РЕЖИМ")
+    logging.info(" Запуск парсера HAPPiVPN (GooseDev72 edition) - ОДНОКРАТНЫЙ РЕЖИМ")
     
     if not ensure_hpwnr():
         logging.error("Невозможно продолжить без hpwnr. Завершение работы.")
@@ -209,15 +209,21 @@ def main():
 
     url_auto, url_default = process_url(decrypted)
     
-    # 1. AUTO версия (чистые ссылки)
-    uri_auto = fetch_and_convert_to_uri(url_auto)
-    content_auto = process_uri_output(uri_auto, is_default=False)
+    # Скачиваем обе подписки
+    content_auto_raw = fetch_subscription(url_auto)
+    content_default_raw = fetch_subscription(url_default)
+    
+    if not content_auto_raw or not content_default_raw:
+        logging.error("Не удалось скачать одну из подписок. Завершение работы.")
+        return 1
+    
+    # Обрабатываем AUTO (passthrough)
+    content_auto = process_auto(content_auto_raw)
     if content_auto:
         save_to_file(FILE_AUTO, content_auto)
-        
-    # 2. DEFAULT версия (с заголовком и общим Base64)
-    uri_default = fetch_and_convert_to_uri(url_default)
-    content_default = process_uri_output(uri_default, is_default=True)
+    
+    # Обрабатываем DEFAULT (headers + vless -> base64)
+    content_default = process_default(content_default_raw)
     if content_default:
         save_to_file(FILE_DEFAULT, content_default)
 
