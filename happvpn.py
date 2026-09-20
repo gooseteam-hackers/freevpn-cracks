@@ -27,6 +27,19 @@ PROFILE_TITLE = "#profile-title: base64:SEFQUGlWUE4gY3JhY2tlZCDinKg="
 # Announce строка для default подписки
 ANNOUNCE_LINE = "#announce: HAPPiVPN | @happvpn | " + datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+# На что заменяем "мусорные" имена
+REPLACEMENT = "ALL 🟢"
+
+# Паттерны имён, которые нужно заменить (TG: @HappVPN, IMO: <число>, Link: <число>)
+NAME_PATTERNS = [
+    re.compile(r'TG:\s*@HappVPN', re.IGNORECASE),
+    re.compile(r'IMO:\s*\d+'),
+    re.compile(r'Link:\s*\d+'),
+]
+
+# Схемы URI, у которых имя находится во фрагменте после '#'
+URI_SCHEMES = ('vless://', 'vmess://', 'trojan://', 'ss://', 'hysteria2://', 'hy2://', 'hysteria://', 'tuic://')
+
 HEADERS = {
     "User-Agent": "GooseDev72-Parser/1.0",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -125,8 +138,8 @@ def fetch_subscription(url):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-        # ВАЖНО: декодируем вручную, а не через resp.text
-        # т.к. requests.text может использовать неверную кодировку из headers
+        # ВАЖНО: декодируем вручную, а не через resp.text,
+        # т.к. requests.text может взять неверную кодировку из HTTP-заголовков
         try:
             return resp.content.decode('utf-8').strip()
         except UnicodeDecodeError:
@@ -134,6 +147,30 @@ def fetch_subscription(url):
     except requests.RequestException as e:
         logging.error(f"Не удалось скачать подписку: {e}")
         return None
+
+def unwrap_base64(text, max_rounds=3):
+    """
+    Если контент целиком является Base64 (подписка пришла закодированной),
+    распаковывает его до plaintext (JSON / vless:// / заголовки).
+    Защищает от двойного кодирования в default.
+    """
+    content = text.strip()
+    for _ in range(max_rounds):
+        # Уже plaintext — не трогаем
+        if content.startswith(('#', '{', '[') + URI_SCHEMES):
+            break
+        compact = re.sub(r'\s+', '', content)
+        if len(compact) < 16 or not re.fullmatch(r'[A-Za-z0-9+/=]+', compact):
+            break
+        try:
+            decoded = base64.b64decode(compact, validate=True).decode('utf-8')
+        except Exception:
+            break
+        if not decoded.strip():
+            break
+        logging.info("📦 Обнаружен слой Base64 в подписке — распаковываю.")
+        content = decoded.strip()
+    return content
 
 def convert_to_uri(content):
     """Конвертирует JSON конфиги в vless:// ссылки через hpwnr."""
@@ -159,36 +196,55 @@ def convert_to_uri(content):
         logging.error(f"❌ Исключение при конвертации: {e}")
         return None
 
+def sanitize_plain(text):
+    """Заменяет 'TG: @HappVPN', 'IMO: <число>', 'Link: <число>' на 'ALL 🟢' в обычном тексте."""
+    for rx in NAME_PATTERNS:
+        text = rx.sub(REPLACEMENT, text)
+    return text
+
+def sanitize_content(content):
+    """
+    Чистит имена нод:
+    - В JSON / plaintext — прямой заменой.
+    - В URI (vless://...#IMYA) — декодирует фрагмент, чистит, кодирует обратно.
+      Это важно: в default подписке имена приходят percent-encoded
+      (IMO%3A%2099363429720), и обычная regex их не видела.
+    """
+    out = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(URI_SCHEMES) and '#' in stripped:
+            head, frag = stripped.split('#', 1)
+            frag_clean = sanitize_plain(urllib.parse.unquote(frag))
+            out.append(head + '#' + urllib.parse.quote(frag_clean, safe=''))
+        else:
+            out.append(sanitize_plain(line))
+    return '\n'.join(out)
+
 def process_auto(content):
     """
-    AUTO версия: максимально passthrough.
-    Если это JSON - возвращаем как есть.
-    Если это уже URI - возвращаем как есть.
-    + Заменяем "IMO: <число>" на "ALL 🟢"
+    AUTO версия: максимально passthrough + чистка имён.
+    JSON возвращаем как есть, URI возвращаем как есть.
     """
     content = content.strip()
+    content = sanitize_content(content)
 
-    # Заменяем "IMO: 99363429720" (и похожие) на "ALL 🟢"
-    content = re.sub(r'IMO:\s*\d+', 'ALL 🟢', content)
-
-    # Проверяем, начинается ли с { или [ (JSON)
     if content.startswith('{') or content.startswith('['):
-        logging.info("AUTO: JSON конфиг, возвращаем как есть (passthrough)")
-        return content
-
-    # Иначе возвращаем как есть (уже URI или другой формат)
-    logging.info("AUTO: возвращаем как есть")
+        logging.info("AUTO: JSON конфиг, возвращаем как есть (passthrough) + имена почищены")
+    else:
+        logging.info("AUTO: возвращаем как есть + имена почищены")
     return content
 
 def process_default(content):
     """
     DEFAULT версия:
-    1. Если это JSON - конвертируем в vless:// URI
-    2. Добавляем заголовок первой строкой
-    3. Добавляем #announce: строку
-    4. Кодируем всё в Base64
+    1. Распаковываем Base64 (если подписка пришла закодированной) — без двойного кодирования
+    2. Если это JSON - конвертируем в vless:// URI
+    3. Чистим имена (в т.ч. в percent-encoded фрагментах)
+    4. Собираем: #profile-title -> #announce -> vless://...
+    5. Кодируем всё в Base64 ОДИН раз
     """
-    content = content.strip()
+    content = unwrap_base64(content.strip())
 
     # Если это JSON, конвертируем в URI
     if content.startswith('{') or content.startswith('['):
@@ -197,10 +253,11 @@ def process_default(content):
         if not uri_content:
             logging.error("Не удалось конвертировать JSON в URI")
             return None
-        content = uri_content
+        # На случай, если hpwnr вернул base64 — распаковываем
+        content = unwrap_base64(uri_content)
 
-    # Заменяем "IMO: <число>" на "ALL 🟢" в vless ссылках тоже
-    content = re.sub(r'IMO:\s*\d+', 'ALL 🟢', content)
+    # Чистим имена нод
+    content = sanitize_content(content)
 
     # Собираем финальный контент:
     # #profile-title: ...
@@ -209,7 +266,7 @@ def process_default(content):
     # vless://...
     final_content = f"{PROFILE_TITLE}\n{ANNOUNCE_LINE}\n{content}"
 
-    # Кодируем всё в Base64
+    # Кодируем всё в Base64 один раз
     logging.info("DEFAULT: кодируем в Base64")
     return base64.b64encode(final_content.encode('utf-8')).decode('utf-8')
 
@@ -248,7 +305,7 @@ def main():
         logging.error("Не удалось скачать одну из подписок. Завершение работы.")
         return 1
 
-    # Обрабатываем AUTO (passthrough + замена IMO)
+    # Обрабатываем AUTO (passthrough + чистка имён)
     content_auto = process_auto(content_auto_raw)
     if content_auto:
         save_to_file(FILE_AUTO, content_auto)
