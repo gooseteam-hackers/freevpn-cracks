@@ -51,6 +51,35 @@ def ensure_hpwnr():
     logging.error("💡 Положи скомпилированный бинарный файл 'hpwnr' в папку 'core/' и закоммить его.")
     return False
 
+def extract_https_link(text):
+    """Умный поиск HTTPS ссылки с приоритетом на /auto и очисткой от мусора"""
+    # Находим все потенциальные URL, идущие до пробела или спецсимволов разметки
+    raw_urls = re.findall(r'(https://[^\s<>"\']+)', text)
+    valid_urls = []
+    
+    for u in raw_urls:
+        # Очищаем от возможных знаков препинания на конце (точка, запятая, скобка и т.д.)
+        clean_u = u.rstrip('./,;)"\']')
+        # Игнорируем ссылки на сам Telegram и слишком короткие строки
+        if 't.me' not in clean_u and len(clean_u) > 15:
+            valid_urls.append(clean_u)
+    
+    if not valid_urls:
+        return None
+    
+    # Приоритет №1: ссылки, заканчивающиеся на /auto
+    for u in valid_urls:
+        if u.rstrip('/').endswith('/auto'):
+            return u
+            
+    # Приоритет №2: ссылки, содержащие /sub (стандартная подписка)
+    for u in valid_urls:
+        if '/sub' in u.lower():
+            return u
+            
+    # Фоллбэк: берем первую валидную найденную ссылку
+    return valid_urls[0]
+
 def get_links_from_message():
     """Ищет и crypt5, и https ссылки в последних сообщениях"""
     logging.info("Парсинг канала @happvpn...")
@@ -80,19 +109,18 @@ def get_links_from_message():
         
         # Ищем crypt5 ссылку
         crypt5_match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', text)
-        # Ищем https ссылку (подписку)
-        https_match = re.search(r'(https://[^\s]+/sub[^\s]*)', text)
+        crypt5_link = crypt5_match.group(1).strip() if crypt5_match else None
+        
+        # Ищем https ссылку через умный экстрактор
+        https_link = extract_https_link(text)
         
         msg_position = "самом последнем" if i == 0 else f"{i+1}-м с конца"
         
-        if crypt5_match or https_match:
-            crypt5_link = crypt5_match.group(1).strip() if crypt5_match else None
-            https_link = https_match.group(1).strip() if https_match else None
-            
+        if crypt5_link or https_link:
             if crypt5_link:
                 logging.info(f"🔗 Найдена crypt5 ссылка (в {msg_position} сообщении): {crypt5_link[:50]}...")
             if https_link:
-                logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении): {https_link[:50]}...")
+                logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении): {https_link[:60]}...")
             
             return crypt5_link, https_link
 
@@ -133,7 +161,7 @@ def process_url(decrypted_url):
         return decoded.rstrip('/') + '/auto', decoded.rstrip('/')
 
 def fetch_subscription(url):
-    logging.info(f"Скачивание подписки: {url[:50]}...")
+    logging.info(f"Скачивание подписки: {url[:60]}...")
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
