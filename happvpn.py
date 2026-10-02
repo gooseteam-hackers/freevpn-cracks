@@ -51,14 +51,15 @@ def ensure_hpwnr():
     logging.error("💡 Положи скомпилированный бинарный файл 'hpwnr' в папку 'core/' и закоммить его.")
     return False
 
-def get_latest_crypt5_link():
+def get_links_from_message():
+    """Ищет и crypt5, и https ссылки в последних сообщениях"""
     logging.info("Парсинг канала @happvpn...")
     try:
         response = requests.get(CHANNEL_URL, headers=HEADERS, timeout=15)
         response.raise_for_status()
     except Exception as e:
         logging.error(f"Ошибка при запросе к Telegram: {e}")
-        return None
+        return None, None
 
     try:
         page_text = response.content.decode('utf-8')
@@ -70,25 +71,36 @@ def get_latest_crypt5_link():
 
     if not message_blocks:
         logging.warning("Не найдено сообщений на странице.")
-        return None
+        return None, None
 
     messages_to_check = message_blocks[-4:]
     
     for i, block in enumerate(reversed(messages_to_check)):
         text = block.get_text()
-        match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', text)
         
-        if match:
-            link = match.group(1).strip()
-            msg_position = "самом последнем" if i == 0 else f"{i+1}-м с конца"
-            logging.info(f"🔗 ИЗВЛЕЧЕННАЯ ССЫЛКА (в {msg_position} сообщении): {link[:50]}...")
-            return link
+        # Ищем crypt5 ссылку
+        crypt5_match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', text)
+        # Ищем https ссылку (подписку)
+        https_match = re.search(r'(https://[^\s]+/sub[^\s]*)', text)
+        
+        msg_position = "самом последнем" if i == 0 else f"{i+1}-м с конца"
+        
+        if crypt5_match or https_match:
+            crypt5_link = crypt5_match.group(1).strip() if crypt5_match else None
+            https_link = https_match.group(1).strip() if https_match else None
+            
+            if crypt5_link:
+                logging.info(f"🔗 Найдена crypt5 ссылка (в {msg_position} сообщении): {crypt5_link[:50]}...")
+            if https_link:
+                logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении): {https_link[:50]}...")
+            
+            return crypt5_link, https_link
 
-    logging.warning("Ссылка happ://crypt5/ в последних 4 сообщениях не найдена.")
-    return None
+    logging.warning("Ссылки не найдены в последних 4 сообщениях.")
+    return None, None
 
 def decrypt_link(crypt_link):
-    logging.info("Дешифровка ссылки...")
+    logging.info("Дешифровка crypt5 ссылки...")
     try:
         cmd = [HPWNR_LOCAL_PATH, crypt_link]
         result = subprocess.run(
@@ -233,14 +245,24 @@ def main():
         logging.error("Невозможно продолжить без hpwnr. Завершение работы.")
         return 1
 
-    crypt_link = get_latest_crypt5_link()
-    if not crypt_link:
-        logging.info("Новых ссылок не найдено. Завершение работы.")
-        return 1
-
-    decrypted = decrypt_link(crypt_link)
-    if not decrypted:
-        logging.error("Ошибка дешифровки. Завершение работы.")
+    crypt_link, https_link = get_links_from_message()
+    
+    decrypted = None
+    used_https_fallback = False
+    
+    # Пробуем расшифровать crypt5
+    if crypt_link:
+        decrypted = decrypt_link(crypt_link)
+        if not decrypted:
+            logging.warning("⚠️ Не удалось расшифровать crypt5, пробуем https fallback...")
+    
+    # Если crypt5 не расшифровался, используем https ссылку
+    if not decrypted and https_link:
+        logging.info("🔄 Используем https ссылку как fallback")
+        decrypted = https_link
+        used_https_fallback = True
+    elif not decrypted and not https_link:
+        logging.error("❌ Нет доступных ссылок для использования. Завершение работы.")
         return 1
 
     url_auto, url_default = process_url(decrypted)
@@ -260,7 +282,10 @@ def main():
     if content_default:
         save_to_file(FILE_DEFAULT, content_default)
 
-    logging.info("🎉 Парсер успешно завершил работу!")
+    if used_https_fallback:
+        logging.info("🎉 Парсер завершил работу (использован https fallback)!")
+    else:
+        logging.info("🎉 Парсер успешно завершил работу!")
     return 0
 
 if __name__ == "__main__":
