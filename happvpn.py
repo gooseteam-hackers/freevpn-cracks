@@ -53,11 +53,14 @@ def ensure_hpwnr():
 
 def extract_https_link(text):
     """Умный поиск HTTPS ссылки с приоритетом на /auto и очисткой от мусора"""
-    raw_urls = re.findall(r'(https://[^\s<>"\']+)', text)
+    # Разрешаем только валидные URL символы (без эмодзи, кириллицы и т.д.)
+    raw_urls = re.findall(r'(https://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+)', text)
     valid_urls = []
     
     for u in raw_urls:
+        # Дополнительная очистка от возможных знаков препинания на конце
         clean_u = u.rstrip('./,;)"\']')
+        # Игнорируем ссылки на сам Telegram и слишком короткие строки
         if 't.me' not in clean_u and len(clean_u) > 15:
             valid_urls.append(clean_u)
     
@@ -147,7 +150,7 @@ def get_final_url():
                 logging.info(f"   {decrypted}")
                 return decrypted
             else:
-                logging.warning(f"️ Не удалось расшифровать crypt5 в {msg_position} сообщении.")
+                logging.warning(f"⚠️ Не удалось расшифровать crypt5 в {msg_position} сообщении.")
                 # Если не расшифровалось, пробуем https из ЭТОГО ЖЕ сообщения
                 if https_link:
                     logging.info(f"🔄 Используем https ссылку из того же сообщения как fallback:")
@@ -156,7 +159,7 @@ def get_final_url():
                 # Если https нет в этом сообщении, цикл пойдет к следующему (более старому)
                     
         elif https_link:
-            logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении):")
+            logging.info(f" Найдена https ссылка (в {msg_position} сообщении):")
             logging.info(f"   {https_link}")
             return https_link
                 
@@ -219,7 +222,7 @@ def convert_to_uri(content):
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
-        logging.error(f" Ошибка hpwnr при конвертации: {stderr}")
+        logging.error(f"❌ Ошибка hpwnr при конвертации: {stderr}")
         return None
     except Exception as e:
         logging.error(f"❌ Исключение при конвертации: {e}")
@@ -290,13 +293,13 @@ def main():
         logging.error("❌ Не удалось получить рабочую ссылку. Завершение работы.")
         return 1
 
-    logging.info(f" Финальная ссылка для обработки:")
+    logging.info(f"🎯 Финальная ссылка для обработки:")
     logging.info(f"   {final_url}")
 
     url_auto, url_default = process_url(final_url)
 
     logging.info(f"📡 URL AUTO: {url_auto}")
-    logging.info(f" URL DEFAULT: {url_default}")
+    logging.info(f"📡 URL DEFAULT: {url_default}")
 
     content_auto_raw = fetch_subscription(url_auto)
     content_default_raw = fetch_subscription(url_default)
