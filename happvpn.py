@@ -53,14 +53,11 @@ def ensure_hpwnr():
 
 def extract_https_link(text):
     """Умный поиск HTTPS ссылки с приоритетом на /auto и очисткой от мусора"""
-    # Находим все потенциальные URL, идущие до пробела или спецсимволов разметки
     raw_urls = re.findall(r'(https://[^\s<>"\']+)', text)
     valid_urls = []
     
     for u in raw_urls:
-        # Очищаем от возможных знаков препинания на конце (точка, запятая, скобка и т.д.)
         clean_u = u.rstrip('./,;)"\']')
-        # Игнорируем ссылки на сам Telegram и слишком короткие строки
         if 't.me' not in clean_u and len(clean_u) > 15:
             valid_urls.append(clean_u)
     
@@ -72,60 +69,12 @@ def extract_https_link(text):
         if u.rstrip('/').endswith('/auto'):
             return u
             
-    # Приоритет №2: ссылки, содержащие /sub (стандартная подписка)
+    # Приоритет №2: ссылки, содержащие /sub
     for u in valid_urls:
         if '/sub' in u.lower():
             return u
             
-    # Фоллбэк: берем первую валидную найденную ссылку
     return valid_urls[0]
-
-def get_links_from_message():
-    """Ищет и crypt5, и https ссылки в последних сообщениях"""
-    logging.info("Парсинг канала @happvpn...")
-    try:
-        response = requests.get(CHANNEL_URL, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-    except Exception as e:
-        logging.error(f"Ошибка при запросе к Telegram: {e}")
-        return None, None
-
-    try:
-        page_text = response.content.decode('utf-8')
-    except UnicodeDecodeError:
-        page_text = response.content.decode('utf-8', errors='replace')
-
-    soup = BeautifulSoup(page_text, 'html.parser')
-    message_blocks = soup.find_all('div', class_='tgme_widget_message_text')
-
-    if not message_blocks:
-        logging.warning("Не найдено сообщений на странице.")
-        return None, None
-
-    messages_to_check = message_blocks[-4:]
-    
-    for i, block in enumerate(reversed(messages_to_check)):
-        text = block.get_text()
-        
-        # Ищем crypt5 ссылку
-        crypt5_match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', text)
-        crypt5_link = crypt5_match.group(1).strip() if crypt5_match else None
-        
-        # Ищем https ссылку через умный экстрактор
-        https_link = extract_https_link(text)
-        
-        msg_position = "самом последнем" if i == 0 else f"{i+1}-м с конца"
-        
-        if crypt5_link or https_link:
-            if crypt5_link:
-                logging.info(f"🔗 Найдена crypt5 ссылка (в {msg_position} сообщении): {crypt5_link[:50]}...")
-            if https_link:
-                logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении): {https_link[:60]}...")
-            
-            return crypt5_link, https_link
-
-    logging.warning("Ссылки не найдены в последних 4 сообщениях.")
-    return None, None
 
 def decrypt_link(crypt_link):
     logging.info("Дешифровка crypt5 ссылки...")
@@ -152,6 +101,62 @@ def decrypt_link(crypt_link):
     except Exception as e:
         logging.error(f"❌ Исключение при дешифровке: {e}")
         return None
+
+def get_final_url():
+    """Ищет ссылку, начиная с САМОГО НОВОГО сообщения. 
+    Если crypt5 не расшифровывается, берет https из ЭТОГО ЖЕ сообщения."""
+    logging.info("Парсинг канала @happvpn...")
+    try:
+        response = requests.get(CHANNEL_URL, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+    except Exception as e:
+        logging.error(f"Ошибка при запросе к Telegram: {e}")
+        return None
+
+    try:
+        page_text = response.content.decode('utf-8')
+    except UnicodeDecodeError:
+        page_text = response.content.decode('utf-8', errors='replace')
+
+    soup = BeautifulSoup(page_text, 'html.parser')
+    message_blocks = soup.find_all('div', class_='tgme_widget_message_text')
+
+    if not message_blocks:
+        logging.warning("Не найдено сообщений на странице.")
+        return None
+
+    # Идем строго с самого последнего (нового) сообщения к более старым (берем последние 5)
+    for i in range(len(message_blocks) - 1, max(-1, len(message_blocks) - 6), -1):
+        block = message_blocks[i]
+        text = block.get_text()
+        
+        crypt5_match = re.search(r'(happ://crypt5/[A-Za-z0-9+/=]+)', text)
+        crypt5_link = crypt5_match.group(1).strip() if crypt5_match else None
+        
+        https_link = extract_https_link(text)
+        
+        msg_position = "самом последнем (новом)" if i == len(message_blocks) - 1 else f"{len(message_blocks) - 1 - i}-м с конца"
+        
+        if crypt5_link:
+            logging.info(f"🔗 Найдена crypt5 ссылка (в {msg_position} сообщении): {crypt5_link[:50]}...")
+            decrypted = decrypt_link(crypt5_link)
+            
+            if decrypted:
+                return decrypted
+            else:
+                logging.warning(f"⚠️ Не удалось расшифровать crypt5 в {msg_position} сообщении.")
+                # Если не расшифровалось, пробуем https из ЭТОГО ЖЕ сообщения
+                if https_link:
+                    logging.info(f"🔄 Используем https ссылку из того же сообщения как fallback: {https_link[:60]}...")
+                    return https_link
+                # Если https нет в этом сообщении, цикл пойдет к следующему (более старому)
+                    
+        elif https_link:
+            logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении): {https_link[:60]}...")
+            return https_link
+                
+    logging.warning("Подходящие ссылки не найдены в последних сообщениях.")
+    return None
 
 def process_url(decrypted_url):
     decoded = urllib.parse.unquote(decrypted_url)
@@ -187,7 +192,7 @@ def unwrap_base64(text, max_rounds=3):
             break
         if not decoded.strip():
             break
-        logging.info("📦 Обнаружен слой Base64 в подписке — распаковываю.")
+        logging.info(" Обнаружен слой Base64 в подписке — распаковываю.")
         content = decoded.strip()
     return content
 
@@ -273,27 +278,13 @@ def main():
         logging.error("Невозможно продолжить без hpwnr. Завершение работы.")
         return 1
 
-    crypt_link, https_link = get_links_from_message()
+    final_url = get_final_url()
     
-    decrypted = None
-    used_https_fallback = False
-    
-    # Пробуем расшифровать crypt5
-    if crypt_link:
-        decrypted = decrypt_link(crypt_link)
-        if not decrypted:
-            logging.warning("⚠️ Не удалось расшифровать crypt5, пробуем https fallback...")
-    
-    # Если crypt5 не расшифровался, используем https ссылку
-    if not decrypted and https_link:
-        logging.info("🔄 Используем https ссылку как fallback")
-        decrypted = https_link
-        used_https_fallback = True
-    elif not decrypted and not https_link:
-        logging.error("❌ Нет доступных ссылок для использования. Завершение работы.")
+    if not final_url:
+        logging.error("❌ Не удалось получить рабочую ссылку. Завершение работы.")
         return 1
 
-    url_auto, url_default = process_url(decrypted)
+    url_auto, url_default = process_url(final_url)
 
     content_auto_raw = fetch_subscription(url_auto)
     content_default_raw = fetch_subscription(url_default)
@@ -310,10 +301,7 @@ def main():
     if content_default:
         save_to_file(FILE_DEFAULT, content_default)
 
-    if used_https_fallback:
-        logging.info("🎉 Парсер завершил работу (использован https fallback)!")
-    else:
-        logging.info("🎉 Парсер успешно завершил работу!")
+    logging.info(" Парсер успешно завершил работу!")
     return 0
 
 if __name__ == "__main__":
