@@ -138,21 +138,26 @@ def get_final_url():
         msg_position = "самом последнем (новом)" if i == len(message_blocks) - 1 else f"{len(message_blocks) - 1 - i}-м с конца"
         
         if crypt5_link:
-            logging.info(f"🔗 Найдена crypt5 ссылка (в {msg_position} сообщении): {crypt5_link[:50]}...")
+            logging.info(f"🔗 Найдена crypt5 ссылка (в {msg_position} сообщении):")
+            logging.info(f"   {crypt5_link}")
             decrypted = decrypt_link(crypt5_link)
             
             if decrypted:
+                logging.info(f"✅ Используется расшифрованная ссылка:")
+                logging.info(f"   {decrypted}")
                 return decrypted
             else:
-                logging.warning(f"⚠️ Не удалось расшифровать crypt5 в {msg_position} сообщении.")
+                logging.warning(f"️ Не удалось расшифровать crypt5 в {msg_position} сообщении.")
                 # Если не расшифровалось, пробуем https из ЭТОГО ЖЕ сообщения
                 if https_link:
-                    logging.info(f"🔄 Используем https ссылку из того же сообщения как fallback: {https_link[:60]}...")
+                    logging.info(f"🔄 Используем https ссылку из того же сообщения как fallback:")
+                    logging.info(f"   {https_link}")
                     return https_link
                 # Если https нет в этом сообщении, цикл пойдет к следующему (более старому)
                     
         elif https_link:
-            logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении): {https_link[:60]}...")
+            logging.info(f"🔗 Найдена https ссылка (в {msg_position} сообщении):")
+            logging.info(f"   {https_link}")
             return https_link
                 
     logging.warning("Подходящие ссылки не найдены в последних сообщениях.")
@@ -166,7 +171,8 @@ def process_url(decrypted_url):
         return decoded.rstrip('/') + '/auto', decoded.rstrip('/')
 
 def fetch_subscription(url):
-    logging.info(f"Скачивание подписки: {url[:60]}...")
+    logging.info(f"Скачивание подписки:")
+    logging.info(f"   {url}")
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
@@ -192,7 +198,7 @@ def unwrap_base64(text, max_rounds=3):
             break
         if not decoded.strip():
             break
-        logging.info(" Обнаружен слой Base64 в подписке — распаковываю.")
+        logging.info("📦 Обнаружен слой Base64 в подписке — распаковываю.")
         content = decoded.strip()
     return content
 
@@ -213,7 +219,7 @@ def convert_to_uri(content):
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
-        logging.error(f"❌ Ошибка hpwnr при конвертации: {stderr}")
+        logging.error(f" Ошибка hpwnr при конвертации: {stderr}")
         return None
     except Exception as e:
         logging.error(f"❌ Исключение при конвертации: {e}")
@@ -272,7 +278,7 @@ def save_to_file(filepath, content):
         logging.error(f"Ошибка записи в {filepath}: {e}")
 
 def main():
-    logging.info("🚀 Запуск парсера HAPPiVPN")
+    logging.info(" Запуск парсера HAPPiVPN")
 
     if not ensure_hpwnr():
         logging.error("Невозможно продолжить без hpwnr. Завершение работы.")
@@ -284,7 +290,13 @@ def main():
         logging.error("❌ Не удалось получить рабочую ссылку. Завершение работы.")
         return 1
 
+    logging.info(f" Финальная ссылка для обработки:")
+    logging.info(f"   {final_url}")
+
     url_auto, url_default = process_url(final_url)
+
+    logging.info(f"📡 URL AUTO: {url_auto}")
+    logging.info(f" URL DEFAULT: {url_default}")
 
     content_auto_raw = fetch_subscription(url_auto)
     content_default_raw = fetch_subscription(url_default)
@@ -301,7 +313,7 @@ def main():
     if content_default:
         save_to_file(FILE_DEFAULT, content_default)
 
-    logging.info(" Парсер успешно завершил работу!")
+    logging.info("🎉 Парсер успешно завершил работу!")
     return 0
 
 if __name__ == "__main__":
